@@ -36,12 +36,10 @@ def run_api():
 async def run_bot():
     """Telegram bot'ni ishga tushirish"""
     # Bot modulini import qilish
-    from main import bot, dp, router
+    # main.py import qilinganda router avtomatik dp ga ulanadi
+    from main import bot, dp
     
     logger.info("🤖 Bot ishga tushmoqda...")
-    
-    # Router'ni ulash
-    dp.include_router(router)
     
     # Polling boshlash
     await dp.start_polling(bot)
