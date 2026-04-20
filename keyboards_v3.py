@@ -4,9 +4,10 @@ KEYBOARDS - Aiogram 3.x uchun klaviaturalar
 """
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
+import os
 
 # Mini App URL - deploy qilgandan so'ng o'zgartiring
-MINI_APP_URL = "https://hearty-curiosity-production.up.railway.app"
+MINI_APP_URL = os.environ.get("MINI_APP_URL", "https://tender-inspiration-production-124b.up.railway.app")
 
 
 # ==================== REPLY KEYBOARDS ====================

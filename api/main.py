@@ -3,19 +3,25 @@
 SMM Mini App API - FastAPI Backend
 Bot bilan bitta server'da ishlaydi
 """
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 import hashlib
 import hmac
 import json
+import os
 from urllib.parse import unquote
 from datetime import datetime
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Static files papkasi
+STATIC_DIR = Path(__file__).parent.parent / "static"
 
 from database import (
     get_user, add_user, update_balance, get_user_orders,
@@ -129,6 +135,10 @@ async def get_current_user(x_telegram_init_data: str = Header(None)) -> dict:
 
 @app.get("/")
 async def root():
+    """Agar static frontend mavjud bo'lsa — index.html, aks holda API status"""
+    index_path = STATIC_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
     return {"status": "ok", "service": "SMM Mini App API"}
 
 @app.get("/health")
@@ -491,3 +501,29 @@ async def get_service(service_id: str):
         raise HTTPException(status_code=404, detail="Service not found")
     
     return service
+
+
+# ==================== STATIC FILES (Mini App Frontend) ====================
+
+# Static assets (JS, CSS, images) - /assets/ papkasini mount qilish
+if STATIC_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="static_assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """SPA catch-all - barcha yo'nalishlar uchun index.html qaytarish"""
+        # API route'larini o'tkazib yuborish
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        
+        # Fayl mavjudligini tekshirish (masalan, favicon.ico, robots.txt)
+        file_path = STATIC_DIR / full_path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+        
+        # Boshqa barcha yo'nalishlar uchun index.html (SPA routing)
+        index_path = STATIC_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+        
+        raise HTTPException(status_code=404, detail="Not found")
