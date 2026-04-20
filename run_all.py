@@ -33,7 +33,7 @@ def run_api():
     server.run()
 
 
-async def run_bot():
+async def run_bot(handle_signals=True):
     """Telegram bot'ni ishga tushirish"""
     # Bot modulini import qilish
     # main.py import qilinganda router avtomatik dp ga ulanadi
@@ -42,7 +42,7 @@ async def run_bot():
     logger.info("🤖 Bot ishga tushmoqda...")
     
     # Polling boshlash
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, handle_signals=handle_signals)
 
 
 def main():
@@ -58,9 +58,9 @@ def main():
         # Railway - API asosiy, Bot background
         logger.info(f"✅ Railway mode - API port {port}")
         
-        # Bot'ni alohida thread'da ishga tushirish
+        # Bot'ni alohida thread'da ishga tushirish (handle_signals=False — thread'da signal handler ishlamaydi)
         def run_bot_thread():
-            asyncio.run(run_bot())
+            asyncio.run(run_bot(handle_signals=False))
         
         bot_thread = threading.Thread(target=run_bot_thread, daemon=True)
         bot_thread.start()
