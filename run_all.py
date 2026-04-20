@@ -38,6 +38,11 @@ async def run_bot(handle_signals=True):
     # Bot modulini import qilish
     # main.py import qilinganda router avtomatik dp ga ulanadi
     from main import bot, dp
+    from database import init_db
+    
+    # DB jadvallarini yaratish
+    init_db()
+    logger.info("✅ Database initialized")
     
     logger.info("🤖 Bot ishga tushmoqda...")
     
