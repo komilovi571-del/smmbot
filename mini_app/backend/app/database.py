@@ -11,11 +11,21 @@ from .config import DATABASE_NAME
 
 @contextmanager
 def get_db():
-    """Database connection context manager"""
-    conn = sqlite3.connect(DATABASE_NAME)
+    """Database connection context manager (xatoda rollback qiladi)"""
+    conn = sqlite3.connect(DATABASE_NAME, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
+        # SQLite concurrent yozuv uchun WAL va busy timeout
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
         yield conn
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 
@@ -69,7 +79,7 @@ class Database:
     
     @staticmethod
     def add_user(user_id: int, username: str, full_name: str, referral_id: Optional[int] = None) -> bool:
-        """Yangi foydalanuvchi qo'shish"""
+        """Yangi foydalanuvchi qo'shish (referral bonus'lar atomic tarzda qo'shiladi)"""
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
@@ -78,22 +88,28 @@ class Database:
                     INSERT INTO users (user_id, username, full_name, referral_id, created_at)
                     VALUES (?, ?, ?, ?, ?)
                 ''', (user_id, username, full_name, referral_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                
+
                 if referral_id:
-                    bonus = int(Database.get_setting('referral_bonus', '500'))
-                    cursor.execute('''
-                        UPDATE users SET referral_count = referral_count + 1 
-                        WHERE user_id = ?
-                    ''', (referral_id,))
-                    cursor.execute('''
-                        UPDATE users SET balance = balance + ?, referral_earnings = referral_earnings + ?
-                        WHERE user_id = ?
-                    ''', (bonus, bonus, referral_id,))
-                    cursor.execute('''
-                        UPDATE users SET balance = ?
-                        WHERE user_id = ?
-                    ''', (bonus, user_id,))
-                
+                    try:
+                        bonus = int(Database.get_setting('referral_bonus', '500') or '500')
+                    except (TypeError, ValueError):
+                        bonus = 500
+                    # O'z-o'ziga referral qilib bo'lmaydi
+                    if referral_id != user_id:
+                        # Referrerga bonus
+                        cursor.execute('''
+                            UPDATE users
+                            SET referral_count = referral_count + 1,
+                                balance = balance + ?,
+                                referral_earnings = referral_earnings + ?
+                            WHERE user_id = ?
+                        ''', (bonus, bonus, referral_id))
+                        # Yangi foydalanuvchiga bonus (mavjud balansga QO'SHILADI, overwrite emas)
+                        cursor.execute('''
+                            UPDATE users SET balance = balance + ?
+                            WHERE user_id = ?
+                        ''', (bonus, user_id))
+
                 conn.commit()
                 return True
             return False
@@ -108,14 +124,32 @@ class Database:
             return result[0] if result else 0
     
     @staticmethod
-    def update_balance(user_id: int, amount: float) -> None:
-        """Balansni yangilash"""
+    def update_balance(user_id: int, amount: float) -> bool:
+        """
+        Balansni yangilash — atomic. Ayirish paytida yetarli mablag' bo'lmasa False qaytaradi
+        (balans manfiyga tushmaydi). Yutish — True qaytaradi.
+        """
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute('''
-                UPDATE users SET balance = balance + ? WHERE user_id = ?
-            ''', (amount, user_id))
+            if amount < 0:
+                # Atomic decrement: faqat balans >= |amount| bo'lsa ayiriladi
+                cursor.execute(
+                    '''
+                    UPDATE users
+                    SET balance = balance + ?
+                    WHERE user_id = ? AND balance + ? >= 0
+                    ''',
+                    (amount, user_id, amount),
+                )
+                success = cursor.rowcount > 0
+            else:
+                cursor.execute(
+                    'UPDATE users SET balance = balance + ? WHERE user_id = ?',
+                    (amount, user_id),
+                )
+                success = cursor.rowcount > 0
             conn.commit()
+            return success
     
     @staticmethod
     def get_referral_stats(user_id: int) -> Tuple[int, float]:
@@ -188,15 +222,6 @@ class Database:
         """Buyurtmaga API order ID qo'shish"""
         with get_db() as conn:
             cursor = conn.cursor()
-            try:
-                cursor.execute("ALTER TABLE orders ADD COLUMN api_order_id INTEGER")
-            except:
-                pass
-            try:
-                cursor.execute("ALTER TABLE orders ADD COLUMN panel_name TEXT")
-            except:
-                pass
-            
             if panel_name:
                 cursor.execute("UPDATE orders SET api_order_id = ?, panel_name = ? WHERE id = ?", 
                              (api_order_id, panel_name, order_id))

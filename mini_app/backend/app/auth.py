@@ -14,7 +14,7 @@ from jose import JWTError, jwt
 from fastapi import HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from .config import BOT_TOKEN, SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+from .config import BOT_TOKEN, SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES, INIT_DATA_MAX_AGE_SECONDS
 from .database import Database
 from .models import TelegramUser
 
@@ -38,9 +38,13 @@ def validate_init_data(init_data: str) -> Optional[Dict[str, Any]]:
         if not received_hash:
             return None
         
-        # auth_date ni tekshirish (24 soatdan eski bo'lmasligi kerak)
+        # auth_date ni tekshirish — init_data yangi bo'lishi shart (replay hujumiga qarshi).
+        # Default: 5 daqiqa. Env orqali INIT_DATA_MAX_AGE_SECONDS bilan sozlanadi.
         auth_date = int(parsed.get('auth_date', [0])[0])
-        if time.time() - auth_date > 86400:  # 24 soat
+        if auth_date <= 0:
+            return None
+        age = time.time() - auth_date
+        if age < 0 or age > INIT_DATA_MAX_AGE_SECONDS:
             return None
         
         # Data-check-string yaratish

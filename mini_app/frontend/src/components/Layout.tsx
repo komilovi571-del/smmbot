@@ -1,4 +1,4 @@
-import { ReactNode, useEffect } from 'react'
+import { ReactNode, useEffect, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import BottomNav from './BottomNav'
@@ -14,13 +14,25 @@ export default function Layout({ children }: LayoutProps) {
   const navigate = useNavigate()
   const location = useLocation()
   const { initData, backButton } = useTelegram()
-  const { isAuthenticated, setAuth } = useAuthStore()
+  const { isAuthenticated, setAuth, logout } = useAuthStore()
+  const [authError, setAuthError] = useState<string | null>(null)
+
+  // Listen for 401 events from axios interceptor
+  useEffect(() => {
+    const handler = () => {
+      logout()
+      setAuthError('Sessiya tugadi. Qayta kiring.')
+    }
+    window.addEventListener('auth:unauthorized', handler)
+    return () => window.removeEventListener('auth:unauthorized', handler)
+  }, [logout])
 
   // Authenticate on mount
   useEffect(() => {
     async function authenticate() {
       if (initData && !isAuthenticated) {
         try {
+          setAuthError(null)
           const response = await authAPI.authenticate(initData)
           if (response.success && response.user) {
             setAuth('telegram-session', {
@@ -33,8 +45,10 @@ export default function Layout({ children }: LayoutProps) {
               is_banned: response.user.is_banned || false
             })
           }
-        } catch (error) {
+        } catch (error: any) {
           console.error('Auth error:', error)
+          const msg = error?.response?.data?.detail || 'Autentifikatsiya xatosi'
+          setAuthError(msg)
         }
       }
     }
@@ -58,6 +72,11 @@ export default function Layout({ children }: LayoutProps) {
 
   return (
     <div className="min-h-screen bg-tg-bg pb-20">
+      {authError && (
+        <div className="mx-4 mt-2 rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+          {authError}
+        </div>
+      )}
       <AnimatePresence mode="wait">
         <motion.main
           key={location.pathname}

@@ -9,8 +9,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 # Admin ID
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-# Kanal username
-CHANNEL_USERNAME = "@ideaLsmm_uzb"
+# Kanal username (env orqali override mumkin)
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "@ideaLsmm_uzb")
 
 # Ma'lumotlar bazasi (SQLite)
 DATABASE_NAME = "smm_bot.db"
@@ -32,23 +32,21 @@ FIVESIM_API_KEY = os.getenv("FIVESIM_API_KEY", "")
 # SMSPVA.COM API (Virtual telefon raqamlar - eng arzon!)
 SMSPVA_API_KEY = os.getenv("SMSPVA_API_KEY", "")
 
-# To'lov karta raqamlari
-# Shu yerga o'zingizning haqiqiy karta raqamlaringizni kiriting!
-PAYMENT_CARDS = {
-    "Click": {
-        "card": os.getenv("CLICK_CARD", "9860 1901 0198 2212"),
-        "name": os.getenv("CLICK_NAME", "IDEAL SMM")
-    },
-    "Payme": {
-        "card": os.getenv("PAYME_CARD", "9860 1901 0198 2212"),
-        "name": os.getenv("PAYME_NAME", "IDEAL SMM")
-    },
-    "Uzum": {
-        "card": os.getenv("UZUM_CARD", "9860 1901 0198 2212"),
-        "name": os.getenv("UZUM_NAME", "IDEAL SMM")
-    },
-    "Visa/MasterCard": {
-        "card": os.getenv("VISA_CARD", "9860 1901 0198 2212"),
-        "name": os.getenv("VISA_NAME", "IDEAL SMM")
-    }
-}
+# To'lov karta raqamlari — barcha qiymatlar .env'dan olinadi (hardcode default YO'Q).
+# Agar bironta karta uchun env to'liq to'ldirilmagan bo'lsa — u karta ko'rsatilmaydi.
+def _card(env_card: str, env_name: str):
+    card = os.getenv(env_card, "").strip()
+    name = os.getenv(env_name, "").strip()
+    return {"card": card, "name": name} if (card and name) else None
+
+
+PAYMENT_CARDS = {}
+for _label, _ec, _en in (
+    ("Click", "CLICK_CARD", "CLICK_NAME"),
+    ("Payme", "PAYME_CARD", "PAYME_NAME"),
+    ("Uzum", "UZUM_CARD", "UZUM_NAME"),
+    ("Visa/MasterCard", "VISA_CARD", "VISA_NAME"),
+):
+    _data = _card(_ec, _en)
+    if _data:
+        PAYMENT_CARDS[_label] = _data

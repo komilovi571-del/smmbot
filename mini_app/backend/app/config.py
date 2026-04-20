@@ -4,6 +4,7 @@ Mini App Backend konfiguratsiyasi
 """
 import os
 from pathlib import Path
+from typing import Dict
 from dotenv import load_dotenv
 
 # .env faylni yuklash (parent directory'dan)
@@ -39,33 +40,52 @@ CLICK_MERCHANT_ID = os.getenv("CLICK_MERCHANT_ID", "")
 CLICK_SERVICE_ID = os.getenv("CLICK_SERVICE_ID", "")
 CLICK_SECRET_KEY = os.getenv("CLICK_SECRET_KEY", "")
 
-# CORS origins
+# CORS origins — Telegram regex'i main.py ichida qo'shiladi
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 CORS_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://web.telegram.org",
-    "https://*.telegram.org",
     FRONTEND_URL,
 ]
 
 # JWT sozlamalari
-SECRET_KEY = os.getenv("SECRET_KEY", BOT_TOKEN[:32] if BOT_TOKEN else "secret-key-for-jwt")
+# MUHIM: Production'da JWT_SECRET_KEY albatta env'ga o'rnatilishi kerak.
+# Agar env yo'q bo'lsa — xavfsiz ishlamaymiz, startup'da xato beramiz.
+_ENV_SECRET = os.getenv("JWT_SECRET_KEY") or os.getenv("SECRET_KEY")
+if not _ENV_SECRET:
+    # Dev fallback: BOT_TOKEN'dan kriptografik tarzda hosil qilingan kalit (tokenning o'zi emas)
+    if BOT_TOKEN:
+        import hashlib
+        _ENV_SECRET = hashlib.sha256(("jwt-v1::" + BOT_TOKEN).encode()).hexdigest()
+    else:
+        raise RuntimeError(
+            "JWT_SECRET_KEY env variable o'rnatilmagan. "
+            "Iltimos, .env fayliga JWT_SECRET_KEY=<tasodifiy uzoq string> qo'shing."
+        )
+if len(_ENV_SECRET) < 32:
+    raise RuntimeError("JWT_SECRET_KEY juda qisqa (kamida 32 belgi bo'lishi kerak).")
+SECRET_KEY = _ENV_SECRET
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 soat
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))  # 24 soat default
 
-# To'lov kartalari
-PAYMENT_CARDS = {
-    "Click": {
-        "card": os.getenv("CLICK_CARD", "9860 1901 0198 2212"),
-        "name": os.getenv("CLICK_NAME", "IDEAL SMM")
-    },
-    "Payme": {
-        "card": os.getenv("PAYME_CARD", "9860 1901 0198 2212"),
-        "name": os.getenv("PAYME_NAME", "IDEAL SMM")
-    },
-    "Uzum": {
-        "card": os.getenv("UZUM_CARD", "9860 1901 0198 2212"),
-        "name": os.getenv("UZUM_NAME", "IDEAL SMM")
+# Telegram init_data auth_date oynasi (soniyalarda). Default 5 daqiqa.
+INIT_DATA_MAX_AGE_SECONDS = int(os.getenv("INIT_DATA_MAX_AGE_SECONDS", "300"))
+
+# To'lov kartalari — barcha qiymatlar .env'dan olinadi, hardcode default yo'q.
+def _card(env_card: str, env_name: str) -> Dict[str, str]:
+    return {
+        "card": os.getenv(env_card, "").strip(),
+        "name": os.getenv(env_name, "").strip(),
     }
-}
+
+
+PAYMENT_CARDS: Dict[str, Dict[str, str]] = {}
+for _label, _ec, _en in (
+    ("Click", "CLICK_CARD", "CLICK_NAME"),
+    ("Payme", "PAYME_CARD", "PAYME_NAME"),
+    ("Uzum", "UZUM_CARD", "UZUM_NAME"),
+):
+    _data = _card(_ec, _en)
+    if _data["card"] and _data["name"]:
+        PAYMENT_CARDS[_label] = _data

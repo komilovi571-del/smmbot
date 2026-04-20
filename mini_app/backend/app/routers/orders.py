@@ -2,8 +2,10 @@
 """
 Buyurtma endpointlari
 """
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, Request
 from typing import Dict, Any, List
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..auth import get_current_user
 from ..database import Database
@@ -12,81 +14,101 @@ from ..smm_api import smm_api
 from ..models import OrderCreate, OrderResponse
 
 router = APIRouter(prefix="/orders", tags=["orders"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/create", response_model=OrderResponse)
+@limiter.limit("5/minute")
 async def create_order(
+    request: Request,
     order: OrderCreate,
     user: Dict[str, Any] = Depends(get_current_user)
 ):
     """
-    Yangi buyurtma yaratish
+    Yangi buyurtma yaratish.
+
+    Poydon tartib (atomic + refundable):
+    1) Xizmat + miqdorni tekshirish
+    2) Balansni ATOMIC tarzda ayirish (rowcount orqali mablag' yetarliligini aniqlaymiz)
+    3) SMM Panelga so'rov yuborish — agar xato bo'lsa pulni QAYTARAMIZ
+    4) Buyurtmani bazaga yozish — agar yozishda xato bo'lsa ham pulni qaytaramiz
     """
     # Xizmatni tekshirish
     service = get_service_info(order.service_id)
     if not service:
         raise HTTPException(status_code=404, detail="Xizmat topilmadi")
-    
+
     # Miqdorni tekshirish
     if order.quantity < service["min_quantity"]:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Minimal miqdor: {service['min_quantity']}"
         )
-    
+
     if order.quantity > service["max_quantity"]:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Maksimal miqdor: {service['max_quantity']}"
         )
-    
+
     # Narxni hisoblash
     price_per_1000 = service["price_per_1000"]
     total_price = int((order.quantity / 1000) * price_per_1000)
-    
+
     # Minimal narx
     if total_price < 100:
         total_price = 100
-    
-    # Balansni tekshirish
-    balance = Database.get_balance(user["user_id"])
-    if balance < total_price:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Balans yetarli emas. Kerak: {total_price:,} so'm, Mavjud: {balance:,} so'm"
-        )
-    
-    # SMM Panel'ga buyurtma yuborish
-    panel_name = service["panel"]
-    panel_service_id = service["panel_service_id"]
-    
+
+    # Panel ma'lumotlari
+    panel_name = service.get("panel")
+    panel_service_id = service.get("panel_service_id")
     if not panel_name or not panel_service_id:
         raise HTTPException(status_code=500, detail="Panel xizmati mavjud emas")
-    
-    result = await smm_api.add_order(panel_name, panel_service_id, order.link, order.quantity)
-    
-    if "error" in result:
-        raise HTTPException(status_code=500, detail=f"Panel xatosi: {result['error']}")
-    
+
+    # 1) ATOMIC debit — agar yetarli bo'lmasa False qaytaradi (balans saqlanadi)
+    debited = Database.update_balance(user["user_id"], -total_price)
+    if not debited:
+        current_balance = Database.get_balance(user["user_id"])
+        raise HTTPException(
+            status_code=400,
+            detail=f"Balans yetarli emas. Kerak: {total_price:,} so'm, Mavjud: {current_balance:,} so'm"
+        )
+
+    # 2) SMM Panelga so'rov — har qanday xatoda pul qaytariladi
+    try:
+        result = await smm_api.add_order(panel_name, panel_service_id, order.link, order.quantity)
+    except Exception as e:
+        Database.update_balance(user["user_id"], total_price)  # refund
+        raise HTTPException(status_code=502, detail=f"Panel bilan aloqa xatosi: {e}")
+
+    if not isinstance(result, dict) or "error" in result:
+        Database.update_balance(user["user_id"], total_price)  # refund
+        err = result.get("error") if isinstance(result, dict) else "noma'lum"
+        raise HTTPException(status_code=502, detail=f"Panel xatosi: {err}")
+
     api_order_id = result.get("order")
     if not api_order_id:
-        raise HTTPException(status_code=500, detail="Buyurtma yaratishda xatolik")
-    
-    # Balansdan yechish
-    Database.update_balance(user["user_id"], -total_price)
-    
-    # Bazaga saqlash
-    order_id = Database.add_order(
-        user_id=user["user_id"],
-        service_type=order.service_id,
-        link=order.link,
-        quantity=order.quantity,
-        price=total_price
-    )
-    
-    # API order ID saqlash
-    Database.update_order_api_id(order_id, int(api_order_id), panel_name)
-    
+        Database.update_balance(user["user_id"], total_price)  # refund
+        raise HTTPException(status_code=502, detail="Panel buyurtma ID qaytarmadi")
+
+    # 3) Bazaga saqlash
+    try:
+        order_id = Database.add_order(
+            user_id=user["user_id"],
+            service_type=order.service_id,
+            link=order.link,
+            quantity=order.quantity,
+            price=total_price
+        )
+        Database.update_order_api_id(order_id, int(api_order_id), panel_name)
+    except Exception as e:
+        # Pulni qaytaramiz. Panelda buyurtma yaratilgan — log uchun ID saqlab qolamiz.
+        Database.update_balance(user["user_id"], total_price)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Buyurtma saqlashda xatolik (panel order={api_order_id}): {e}"
+        )
+
     return OrderResponse(
         id=order_id,
         service_type=order.service_id,

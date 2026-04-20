@@ -14,6 +14,7 @@ CLICK_SERVICE_ID=your_service_id
 CLICK_SECRET_KEY=your_secret_key
 """
 import hashlib
+import hmac
 import time
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -55,13 +56,18 @@ class ClickAPI:
     def verify_sign(click_trans_id: int, service_id: int, merchant_trans_id: str,
                     amount: float, action: int, sign_time: str, sign: str) -> bool:
         """
-        Click SIGN tekshirish
+        Click SIGN tekshirish (constant-time compare — timing hujumiga qarshi).
         """
+        if not CLICK_SECRET_KEY:
+            # Kalit sozlanmagan bo'lsa — hech qachon true qaytarmaymiz.
+            return False
+        if not sign or len(sign) != 32:
+            return False
         expected_sign = ClickAPI.generate_sign(
             click_trans_id, service_id, CLICK_SECRET_KEY,
             merchant_trans_id, amount, action, sign_time
         )
-        return expected_sign == sign
+        return hmac.compare_digest(expected_sign.lower(), sign.lower())
     
     @staticmethod
     def create_payment(user_id: int, amount: float) -> Dict[str, Any]:

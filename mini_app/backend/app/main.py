@@ -3,14 +3,21 @@
 SMM Mini App - FastAPI Backend
 Asosiy kirish nuqtasi
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from .config import CORS_ORIGINS
 from .routers import auth, user, services, orders, payments, sms
 from .routers import click as click_router
 from .database import Database
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -35,13 +42,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS
+# Rate limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS — aniq origin'lar ro'yxati (xavfsizlik uchun "*" ishlatilmaydi)
+# Telegram Web App domain'lari va konfiguratsiyadagi FRONTEND_URL ruxsat etilgan.
+# Mahalliy rivojlantirish origin'lari (localhost:3000, 5173) config.py ichida.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Production'da CORS_ORIGINS ishlatiladi
+    allow_origins=CORS_ORIGINS,
+    allow_origin_regex=r"https://.*\.telegram\.org",
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
 )
 
 # Routerlar
@@ -71,8 +85,18 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+    """Health check endpoint with DB ping"""
+    try:
+        from .database import get_db
+        with get_db() as conn:
+            conn.execute("SELECT 1")
+        return {"status": "healthy", "database": "ok"}
+    except Exception as e:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "database": str(e)}
+        )
 
 
 @app.get("/api/settings")

@@ -23,6 +23,7 @@ export function setTelegramInitData(initData: string) {
 
 const api = axios.create({
   baseURL: API_URL,
+  timeout: 30000,
   headers: {
     'Content-Type': 'application/json'
   }
@@ -40,6 +41,11 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
+    if (error.response?.status === 401) {
+      // Token expired or invalid — clear auth state
+      console.warn('Unauthorized: clearing auth state')
+      window.dispatchEvent(new CustomEvent('auth:unauthorized'))
+    }
     console.error('API Error:', error.response?.data || error.message)
     return Promise.reject(error)
   }
@@ -142,11 +148,8 @@ export const paymentsAPI = {
     card_holder: string
     min_amount: number
   }[]> => {
-    // Mock payment methods - backend'da qo'shilishi kerak
-    return [
-      { id: 'uzcard', name: 'UzCard', card_number: '8600 1234 5678 9012', card_holder: 'IDEAL SMM', min_amount: 5000 },
-      { id: 'humo', name: 'Humo', card_number: '9860 1234 5678 9012', card_holder: 'IDEAL SMM', min_amount: 5000 },
-    ]
+    const { data } = await api.get('/api/payments/methods')
+    return data
   },
   
   create: async (amount: number, method: string): Promise<Payment> => {
@@ -241,30 +244,18 @@ export const servicesAPI = {
 
 export const smsAPI = {
   getPlatforms: async (): Promise<SMSPlatform[]> => {
-    // Mock - backend'da qo'shilishi kerak
-    return [
-      { code: 'tg', name: 'Telegram', emoji: '📱' },
-      { code: 'wa', name: 'WhatsApp', emoji: '📲' },
-      { code: 'ig', name: 'Instagram', emoji: '📸' },
-      { code: 'go', name: 'Google', emoji: '🔍' },
-    ]
+    const { data } = await api.get('/api/sms/platforms')
+    return data
   },
   
   getCountries: async (): Promise<SMSCountry[]> => {
-    return [
-      { code: 'ru', name: 'Rossiya', flag: '🇷🇺' },
-      { code: 'uz', name: "O'zbekiston", flag: '🇺🇿' },
-      { code: 'kz', name: "Qozog'iston", flag: '🇰🇿' },
-      { code: 'ua', name: 'Ukraina', flag: '🇺🇦' },
-    ]
+    const { data } = await api.get('/api/sms/countries')
+    return data
   },
   
-  getPrices: async (_platform: string, _country: string): Promise<any[]> => {
-    // Mock prices
-    return [
-      { provider_name: '5sim', available: 245, price_uzs: 15000 },
-      { provider_name: 'SMS-Activate', available: 189, price_uzs: 18000 },
-    ]
+  getPrices: async (platform: string, country: string): Promise<any[]> => {
+    const { data } = await api.get(`/api/sms/prices/${platform}/${country}`)
+    return data
   },
   
   buy: async (platform: string, country: string): Promise<any> => {

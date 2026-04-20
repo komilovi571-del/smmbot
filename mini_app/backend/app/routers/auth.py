@@ -3,9 +3,11 @@
 Autentifikatsiya endpointlari
 """
 from datetime import timedelta
-from fastapi import APIRouter, HTTPException, Body
+from fastapi import APIRouter, HTTPException, Body, Request
 from typing import Dict, Any
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..auth import validate_init_data, create_access_token
 from ..database import Database
@@ -13,6 +15,7 @@ from ..models import AuthResponse
 from ..config import ACCESS_TOKEN_EXPIRE_MINUTES
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 class AuthRequest(BaseModel):
@@ -20,13 +23,14 @@ class AuthRequest(BaseModel):
 
 
 @router.post("")
-async def authenticate_telegram_simple(request: AuthRequest):
+@limiter.limit("10/minute")
+async def authenticate_telegram_simple(request: Request, body: AuthRequest):
     """
     Telegram Mini App autentifikatsiyasi - /api/auth endpoint
     Frontend buni ishlatadi
     """
     # Init data ni tekshirish
-    validated = validate_init_data(request.init_data)
+    validated = validate_init_data(body.init_data)
     
     if not validated:
         raise HTTPException(status_code=401, detail="Init data yaroqsiz")

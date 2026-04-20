@@ -2,8 +2,10 @@
 """
 SMS / Virtual raqam endpointlari
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import Dict, Any, List
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from ..auth import get_current_user
 from ..database import Database
@@ -12,6 +14,7 @@ from ..sms_api import sms_api
 from ..models import SMSOrderCreate, SMSOrderResponse, SMSPriceInfo
 
 router = APIRouter(prefix="/sms", tags=["sms"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get("/platforms")
@@ -56,7 +59,9 @@ async def get_sms_prices(
 
 
 @router.post("/buy")
+@limiter.limit("5/minute")
 async def buy_sms_number(
+    request: Request,
     order: SMSOrderCreate,
     user: Dict[str, Any] = Depends(get_current_user)
 ) -> Dict[str, Any]:
@@ -79,27 +84,29 @@ async def buy_sms_number(
     cheapest = prices[0]
     price_uzs = cheapest["price_uzs"]
     provider = cheapest["provider"]
-    
-    # Balansni tekshirish
-    balance = Database.get_balance(user["user_id"])
-    if balance < price_uzs:
+
+    # ATOMIC debit — agar yetarli bo'lmasa False qaytaradi
+    if not Database.update_balance(user["user_id"], -price_uzs):
+        current_balance = Database.get_balance(user["user_id"])
         raise HTTPException(
             status_code=400,
-            detail=f"Balans yetarli emas. Kerak: {price_uzs:,} so'm"
+            detail=f"Balans yetarli emas. Kerak: {price_uzs:,} so'm, Mavjud: {current_balance:,} so'm"
         )
-    
-    # Raqam sotib olish
-    result = await sms_api.buy_number(provider, order.platform, order.country)
-    
+
+    # Raqam sotib olish — xatoda pulni QAYTARAMIZ
+    try:
+        result = await sms_api.buy_number(provider, order.platform, order.country)
+    except Exception as e:
+        Database.update_balance(user["user_id"], price_uzs)  # refund
+        raise HTTPException(status_code=502, detail=f"SMS provayder xatosi: {e}")
+
     if not result.get("success"):
+        Database.update_balance(user["user_id"], price_uzs)  # refund
         raise HTTPException(
-            status_code=500,
+            status_code=502,
             detail=result.get("error", "Raqam olishda xatolik")
         )
-    
-    # Balansdan yechish
-    Database.update_balance(user["user_id"], -price_uzs)
-    
+
     return {
         "success": True,
         "order_id": result["order_id"],

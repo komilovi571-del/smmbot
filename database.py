@@ -20,6 +20,9 @@ def get_db_connection():
     try:
         conn = sqlite3.connect(DATABASE_NAME, timeout=30)
         conn.row_factory = sqlite3.Row  # Dict-like access to rows
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
         cursor = conn.cursor()
         yield conn, cursor
     except sqlite3.Error as e:
@@ -46,6 +49,9 @@ def get_db_transaction():
     try:
         conn = sqlite3.connect(DATABASE_NAME, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA foreign_keys=ON")
         cursor = conn.cursor()
         yield conn, cursor
         conn.commit()
@@ -80,12 +86,16 @@ def init_db():
         )
     ''')
     
-    # phone ustuni mavjud bo'lmasa qo'shish
-    try:
-        cursor.execute('ALTER TABLE users ADD COLUMN phone TEXT')
-        print("Phone ustuni qo'shildi")
-    except Exception as e:
-        pass  # Ustun allaqachon mavjud
+    # Eski bazalar uchun: phone, api_order_id, panel_name ustunlarini qo'shish
+    for alter_sql in (
+        'ALTER TABLE users ADD COLUMN phone TEXT',
+        'ALTER TABLE orders ADD COLUMN api_order_id INTEGER',
+        'ALTER TABLE orders ADD COLUMN panel_name TEXT',
+    ):
+        try:
+            cursor.execute(alter_sql)
+        except Exception:
+            pass  # Ustun allaqachon mavjud
     
     # Buyurtmalar jadvali
     cursor.execute('''
@@ -99,6 +109,8 @@ def init_db():
             price REAL,
             status TEXT DEFAULT 'kutilmoqda',
             created_at TEXT,
+            api_order_id INTEGER,
+            panel_name TEXT,
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
     ''')
@@ -353,33 +365,45 @@ def update_user_phone(user_id, phone):
 
 
 def update_balance(user_id, amount):
-    """Balansni yangilash - transaction bilan (race condition oldini olish)"""
+    """
+    Balansni yangilash — atomic. Ayirishda balans yetarli bo'lmasa False qaytaradi
+    (balans manfiyga tushmaydi, race condition'dan himoyalangan).
+    """
     try:
         with get_db_transaction() as (conn, cursor):
             # Foydalanuvchi mavjudligini tekshirish
-            cursor.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
-            result = cursor.fetchone()
-            
-            # Agar foydalanuvchi mavjud bo'lmasa - yaratish
-            if result is None:
+            cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+            exists = cursor.fetchone()
+
+            # Foydalanuvchi yo'q bo'lsa — yaratish (kredit bo'lsa)
+            if exists is None:
+                if amount < 0:
+                    logger.warning(f"update_balance: user {user_id} yo'q, ayirish rad etildi")
+                    return False
                 cursor.execute('''
-                    INSERT INTO users (user_id, balance, is_premium, created_at)
-                    VALUES (?, ?, 0, datetime('now'))
-                ''', (user_id, max(0, amount)))
+                    INSERT INTO users (user_id, balance, created_at)
+                    VALUES (?, ?, datetime('now'))
+                ''', (user_id, amount))
                 logger.info(f"Created new user {user_id} with balance {amount}")
                 return True
-            
-            current_balance = result[0]
-            
-            # Agar ayirish bo'lsa - yetarliligini tekshirish
+
             if amount < 0:
-                if current_balance + amount < 0:
-                    logger.warning(f"Insufficient balance for user {user_id}: {current_balance} + {amount}")
+                # Atomic decrement: faqat balans >= |amount| bo'lsa yangilanadi
+                cursor.execute(
+                    '''
+                    UPDATE users SET balance = balance + ?
+                    WHERE user_id = ? AND balance + ? >= 0
+                    ''',
+                    (amount, user_id, amount),
+                )
+                if cursor.rowcount == 0:
+                    logger.warning(f"Insufficient balance for user {user_id} (need {-amount})")
                     return False
-            
-            cursor.execute('''
-                UPDATE users SET balance = balance + ? WHERE user_id = ?
-            ''', (amount, user_id))
+            else:
+                cursor.execute(
+                    'UPDATE users SET balance = balance + ? WHERE user_id = ?',
+                    (amount, user_id),
+                )
         return True
     except Exception as e:
         logger.error(f"update_balance error: {e}")
@@ -516,17 +540,6 @@ def update_order_api_id(order_id, api_order_id, panel_name=None):
     """Buyurtmaga API order ID va panel nomi qo'shish"""
     try:
         with get_db_transaction() as (conn, cursor):
-            # api_order_id ustuni mavjud bo'lmasa qo'shamiz
-            try:
-                cursor.execute("ALTER TABLE orders ADD COLUMN api_order_id INTEGER")
-            except:
-                pass
-            # panel_name ustuni mavjud bo'lmasa qo'shamiz
-            try:
-                cursor.execute("ALTER TABLE orders ADD COLUMN panel_name TEXT")
-            except:
-                pass
-            
             if panel_name:
                 cursor.execute("UPDATE orders SET api_order_id = ?, panel_name = ? WHERE id = ?", (api_order_id, panel_name, order_id))
             else:
@@ -541,11 +554,6 @@ def get_pending_orders():
     """Kutilayotgan buyurtmalarni olish"""
     try:
         with get_db_connection() as (conn, cursor):
-            # panel_name ustunini tekshirish
-            try:
-                cursor.execute("ALTER TABLE orders ADD COLUMN panel_name TEXT")
-            except:
-                pass
             cursor.execute("""
                 SELECT id, api_order_id, user_id, panel_name 
                 FROM orders 
