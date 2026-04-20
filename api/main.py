@@ -31,11 +31,6 @@ from config import BOT_TOKEN
 
 # Static files papkasi
 STATIC_DIR = Path(__file__).parent.parent / "static"
-print(f"[DEBUG] __file__ = {__file__}")
-print(f"[DEBUG] STATIC_DIR = {STATIC_DIR}")
-print(f"[DEBUG] STATIC_DIR.exists() = {STATIC_DIR.exists()}")
-if STATIC_DIR.exists():
-    print(f"[DEBUG] STATIC_DIR contents: {list(STATIC_DIR.iterdir())}")
 
 # FastAPI app
 app = FastAPI(
